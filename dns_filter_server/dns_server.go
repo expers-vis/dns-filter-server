@@ -10,10 +10,9 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-type query struct {
-	id          uint16
-	sender_addr net.Addr
-}
+
+const BUFFER_SIZE uint16 = 1024
+
 
 type DNSFilterServer struct {
 	IP                 string
@@ -23,8 +22,6 @@ type DNSFilterServer struct {
 	externalServer     string
 	externalServerAddr *net.UDPAddr
 	socket             net.PacketConn
-	parser             dnsmessage.Parser
-	queries            []query
 }
 
 func NewDNSServer(ip string, port uint16, ipVersion uint8) *DNSFilterServer {
@@ -45,34 +42,20 @@ func (server *DNSFilterServer) Start() {
 
 	defer server.socket.Close()
 
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, BUFFER_SIZE)
 
 	for {
 		bytes_read, addr, err := server.socket.ReadFrom(buffer)
-
-		fmt.Printf("Received %d bytes from %s\n", bytes_read, addr)
 
 		if err != nil {
 			fmt.Printf("Error reading: %s", err.Error())
 			continue
 		}
 
-		header, err := server.parser.Start(buffer)
+		fmt.Printf("Received %d bytes from %s\n", bytes_read, addr)
 
-		if err != nil {
-			fmt.Printf("Error parsing header: %s", err.Error())
-			continue
-		}
-
-		fmt.Printf("Header says:\n%s\n", header.GoString())
-
-		// if header.Response {
-		// 	server.handleResponse(buffer, header)
-		// } else {
-		// 	server.handleRequest(addr, header)
-		// }
-
-		server.handle(buffer, header)
+		// TODO: good place for Goroutine
+		server.handle(buffer, addr)
 	}
 }
 
@@ -114,19 +97,21 @@ func (server *DNSFilterServer) getSocket() net.PacketConn {
 	return socket
 }
 
-func (server *DNSFilterServer) handle(msg []byte, header dnsmessage.Header) {
-	// msg, err := server.rebuildDNSQuery(header)
+func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
+	msg, err := server.handleRequest(packet)
 
-	// if err != nil {
-	// 	fmt.Printf("Error rebuilding query: %s\n", err.Error())
-	// 	return
-	// }
+	// TODO: refuse if filtered
+	if err != nil {
+		fmt.Printf("Error during handling the request: %s\n", err.Error())
+		return
+	}
 
-	extConn, err := net.DialUDP("udp4", nil, server.externalServerAddr)
+	extConn, err := net.Dial("udp4", server.externalServer + ":53")
 
 	if err != nil {
 		fmt.Printf("Error establishing UDP dial: %s\n", err.Error())
 	}
+	fmt.Printf("Established UDP dial: %s\n", extConn.LocalAddr().String())
 
 	defer extConn.Close()
 
@@ -140,26 +125,64 @@ func (server *DNSFilterServer) handle(msg []byte, header dnsmessage.Header) {
 
 	extConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, BUFFER_SIZE)
 
-	n, _, err := extConn.ReadFromUDP(buffer)
+	n, err := extConn.Read(buffer)
 
 	if err != nil {
 		fmt.Printf("Error receiving DNS response: %s\n", err.Error())
 	}
 	fmt.Printf("Received %d bytes as DNS response\n", n)
 
-	server.handleResponse(buffer, header)
+	// truncate the buffer
+	server.handleResponse(buffer[:n], sender)
 }
 
-func (server *DNSFilterServer) rebuildDNSQuery(header dnsmessage.Header) ([]byte, error) {
-	questions, err := server.parser.AllQuestions()
-
+func (server *DNSFilterServer) handleRequest(msg []byte) ([]byte, error) {
+	header, questions, err := server.parseQuery(msg)
+	
 	if err != nil {
-		fmt.Printf("Error getting questions: %s\n", err.Error())
+		fmt.Printf("Error parsing query: %s\n", err.Error())
 		return nil, err
 	}
 
+	// TODO: filter here
+
+	new_msg, err := server.rebuildQuery(header, questions)
+
+	if err != nil {
+		fmt.Printf("Error rebuilding query: %s\n", err.Error())
+		return nil, err
+	}
+
+	return new_msg, nil
+}
+
+func (server *DNSFilterServer) handleResponse(msg []byte, senderAddr net.Addr) {
+	header, answers, err := server.parseResponse(msg)
+
+	if err != nil {
+		fmt.Printf("Error reading DNS response: %s\n", err.Error())
+		return
+	}
+
+	fmt.Println(header.GoString())
+	fmt.Println(answers)
+
+	_, err = server.socket.WriteTo(msg, senderAddr)
+
+	if err != nil {
+		fmt.Printf("Error sending DNS response message: %s\n", err.Error())
+		return
+	}
+	fmt.Printf("Sent back DNS query to: %s\n", senderAddr.String())
+}
+
+func (server *DNSFilterServer) refuseRequest() {
+	// TODO
+}
+
+func (server *DNSFilterServer) rebuildQuery(header dnsmessage.Header, questions []dnsmessage.Question) ([]byte, error) {
 	// only single questions are supported
 	if len(questions) != 1 {
 		// TODO: refuse and send back
@@ -184,97 +207,44 @@ func (server *DNSFilterServer) rebuildDNSQuery(header dnsmessage.Header) ([]byte
 	return msg, nil
 }
 
-func (server *DNSFilterServer) refusePacket() {
-	// TODO
+func (server *DNSFilterServer) parseQuery(msg []byte) (dnsmessage.Header, []dnsmessage.Question, error) {
+	parser := new(dnsmessage.Parser)
+
+	header, err := parser.Start(msg)
+
+	if err != nil {
+		return dnsmessage.Header{}, nil, err
+	}
+
+	questions, err := parser.AllQuestions()
+
+	if err != nil {
+		return dnsmessage.Header{}, nil, err
+	}
+
+	return header, questions, nil
 }
 
-func (server *DNSFilterServer) handleRequest(sender net.Addr, header dnsmessage.Header) {
-	questions, err := server.parser.AllQuestions()
+func (server *DNSFilterServer) parseResponse(msg []byte) (dnsmessage.Header, []dnsmessage.Resource, error) {
+	parser := new(dnsmessage.Parser)
+
+	header, err := parser.Start(msg)
 
 	if err != nil {
-		fmt.Printf("Error getting questions: %s\n", err.Error())
-		return
+		return dnsmessage.Header{}, nil, err
 	}
 
-	// only single questions are supported
-	if len(questions) != 1 {
-		// TODO: refuse and send back
-		return
-	}
-
-	// TODO: filter
-
-	question := questions[0]
-	fmt.Printf("Message:\n%s\n", question.GoString())
-
-	builder := dnsmessage.NewBuilder(nil, header)
-	builder.StartQuestions()
-	builder.Question(question)
-	msg, err := builder.Finish()
+	err = parser.SkipAllQuestions()
 
 	if err != nil {
-		fmt.Printf("Error finishing DNS message: %s\n", err.Error())
-		return
+		return dnsmessage.Header{}, nil, err
 	}
 
-	_, err = server.socket.WriteTo(msg, server.externalServerAddr)
+	answers, err := parser.AllAnswers()
 
 	if err != nil {
-		fmt.Printf("Error sending DNS query message: %s\n", err.Error())
-		return
+		return dnsmessage.Header{}, nil, err
 	}
 
-	server.queries = append(server.queries, query{header.ID, sender})
-	fmt.Printf("Sent question to external server.\n")
-}
-
-func (server *DNSFilterServer) handleResponse(msg []byte, header dnsmessage.Header) {
-	query_record, err := server.getQueryByID(header.ID)
-
-	if err != nil {
-		// TODO: refuse and send back
-		return
-	}
-
-	_, err = server.socket.WriteTo(msg, query_record.sender_addr)
-
-	if err != nil {
-		fmt.Printf("Error sending DNS response message: %s\n", err.Error())
-		return
-	}
-
-	server.removeQueryByID(header.ID)
-}
-
-func (server *DNSFilterServer) getQueryByID(id uint16) (query, error) {
-	for _, query := range server.queries {
-		if query.id == id {
-			return query, nil
-		}
-	}
-
-	return query{}, errors.New("query record not found")
-}
-
-func (server *DNSFilterServer) removeQueryByID(id uint16) {
-	var position int = -1
-	var length int = len(server.queries)
-
-	if length > 1 {
-		for pos, query := range server.queries {
-			if query.id == id {
-				position = pos
-			}
-		}
-
-		// id not in query records
-		if position == -1 {
-			return
-		}
-
-		server.queries[position] = server.queries[length-1]
-		server.queries = server.queries[:length-1]
-	} else if length == 1 {
-		server.queries = []query{}
-	}
+	return header, answers, nil
 }
