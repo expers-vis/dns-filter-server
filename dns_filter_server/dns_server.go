@@ -110,36 +110,15 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 		return
 	}
 
-	extConn, err := net.Dial("udp4", server.externalServer + ":53")
+	return_msg, dns_err := server.getExternalResolution(msg)
 
-	if err != nil {
-		fmt.Printf("Error establishing UDP dial: %s\n", err.Error())
-	}
-	fmt.Printf("Established UDP dial: %s\n", extConn.LocalAddr().String())
-
-	defer extConn.Close()
-
-	_, err = extConn.Write(msg)
-
-	if err != nil {
-		fmt.Printf("Error sending DNS query message: %s\n", err.Error())
+	if dns_err != nil {
+		fmt.Printf("Error while getting external resolution: %s\n", dns_err.Error())
 		return
 	}
-	fmt.Printf("Sent DNS query message.\n")
-
-	extConn.SetReadDeadline(time.Now().Add(3 * time.Second))
-
-	buffer := make([]byte, BUFFER_SIZE)
-
-	n, err := extConn.Read(buffer)
-
-	if err != nil {
-		fmt.Printf("Error receiving DNS response: %s\n", err.Error())
-	}
-	fmt.Printf("Received %d bytes as DNS response\n", n)
 
 	// truncate the buffer
-	server.handleResponse(buffer[:n], sender)
+	server.handleResponse(return_msg, sender)
 }
 
 func (server *DNSFilterServer) handleRequest(msg []byte) ([]byte, *dns_error) {
@@ -187,6 +166,39 @@ func (server *DNSFilterServer) handleResponse(msg []byte, senderAddr net.Addr) {
 		return
 	}
 	fmt.Printf("Sent back DNS query to: %s\n", senderAddr.String())
+}
+
+func (server *DNSFilterServer) getExternalResolution(msg []byte) ([]byte, *dns_error){
+	extConn, err := net.Dial("udp4", server.externalServer + ":53")
+
+	if err != nil {
+		fmt.Printf("Error establishing UDP dial: %s\n", err.Error())
+	}
+	fmt.Printf("Established UDP dial: %s\n", extConn.LocalAddr().String())
+
+	defer extConn.Close()
+
+	_, err = extConn.Write(msg)
+
+	if err != nil {
+		fmt.Printf("Error sending DNS query message: %s\n", err.Error())
+		return nil, RepackDNSError(err, false)
+	}
+	fmt.Printf("Sent DNS query message.\n")
+
+	extConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	buffer := make([]byte, BUFFER_SIZE)
+
+	n, err := extConn.Read(buffer)
+
+	if err != nil {
+		fmt.Printf("Error receiving DNS response: %s\n", err.Error())
+		return nil, RepackDNSError(err, false)
+	}
+	fmt.Printf("Received %d bytes as DNS response\n", n)
+
+	return buffer[:n], nil
 }
 
 func (server *DNSFilterServer) refuseRequest(msg []byte, senderAddr net.Addr) {
