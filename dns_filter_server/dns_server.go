@@ -1,7 +1,6 @@
 package dns_filter_server
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -98,11 +97,16 @@ func (server *DNSFilterServer) getSocket() net.PacketConn {
 }
 
 func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
-	msg, err := server.handleRequest(packet)
+	msg, dns_err := server.handleRequest(packet)
 
-	// TODO: refuse if filtered
-	if err != nil {
-		fmt.Printf("Error during handling the request: %s\n", err.Error())
+	if dns_err != nil {
+		if dns_err.Filtered() {
+			fmt.Printf("Refusing query for: %s\n", dns_err.Error())
+			server.refuseRequest(packet, sender)
+		} else {
+			fmt.Printf("Error during handling the request: %s\n", dns_err.Error())
+		}
+
 		return
 	}
 
@@ -138,21 +142,28 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 	server.handleResponse(buffer[:n], sender)
 }
 
-func (server *DNSFilterServer) handleRequest(msg []byte) ([]byte, error) {
+func (server *DNSFilterServer) handleRequest(msg []byte) ([]byte, *dns_error) {
 	header, questions, err := server.parseQuery(msg)
 	
 	if err != nil {
 		fmt.Printf("Error parsing query: %s\n", err.Error())
-		return nil, err
+		return nil, RepackDNSError(err, false)
 	}
+	fmt.Printf("Request header: %s\n", header.GoString())
 
+	// only single questions are supported
+	if len(questions) != 1 {
+		// will be refused and sent back
+		return nil, NewDNSError("too many questions", true)
+	}
+	
 	// TODO: filter here
 
 	new_msg, err := server.rebuildQuery(header, questions)
 
 	if err != nil {
 		fmt.Printf("Error rebuilding query: %s\n", err.Error())
-		return nil, err
+		return nil, RepackDNSError(err, false)
 	}
 
 	return new_msg, nil
@@ -178,19 +189,35 @@ func (server *DNSFilterServer) handleResponse(msg []byte, senderAddr net.Addr) {
 	fmt.Printf("Sent back DNS query to: %s\n", senderAddr.String())
 }
 
-func (server *DNSFilterServer) refuseRequest() {
-	// TODO
+func (server *DNSFilterServer) refuseRequest(msg []byte, senderAddr net.Addr) {
+	header, questions, err := server.parseQuery(msg)
+
+	if err != nil {
+		fmt.Printf("Error parsing query: %s\n", err.Error())
+		return
+	}
+
+	// mark as refused and as a response
+	header.RCode = dnsmessage.RCodeRefused
+	header.Response = true
+
+	new_msg, err := server.rebuildQuery(header, questions)
+
+	if err != nil {
+		fmt.Printf("Error rebuilding query: %s\n", err.Error())
+		return
+	}
+
+	_, err = server.socket.WriteTo(new_msg, senderAddr)
+
+	if err != nil {
+		fmt.Printf("Error sending DNS response message: %s\n", err.Error())
+		return
+	}
+	fmt.Printf("Sent back refused DNS query to: %s\n", senderAddr.String())
 }
 
 func (server *DNSFilterServer) rebuildQuery(header dnsmessage.Header, questions []dnsmessage.Question) ([]byte, error) {
-	// only single questions are supported
-	if len(questions) != 1 {
-		// TODO: refuse and send back
-		return nil, errors.New("too many questions")
-	}
-
-	// TODO: filter
-
 	question := questions[0]
 	fmt.Printf("Message:\n%s\n", question.GoString())
 
