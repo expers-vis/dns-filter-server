@@ -132,13 +132,15 @@ func (server *DNSFilterServer) getSocket() (net.PacketConn, error) {
 func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 	queryID, err := server.getQueryID(packet)
 
-	if err != nil {
-		server.logger.log.Errorf("Error on initial packet parsing: %s", err.Error())
-		return
-	}
-
+	// on error queryID will be 0
 	server.logger.StartQueryLog(queryID)
 	defer server.logger.FinishQueryLog(queryID)
+
+	if err != nil {
+		server.logger.AddToQueryLog(queryID, "Error on initial packet parsing: " + err.Error(), "error")
+		server.sendServerFailure(queryID, sender)
+		return
+	}
 
 	msg, dns_err := server.handleRequest(packet)
 
@@ -157,6 +159,7 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 			server.logger.AddToQueryLog(queryID, "Error during handling the request message: " + dns_err.Error(), "error")
 		}
 
+		server.sendServerFailure(queryID, sender)
 		return
 	}
 
@@ -164,6 +167,7 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 
 	if dns_err != nil {
 		server.logger.AddToQueryLog(queryID, "Error while getting external resolution: " + dns_err.Error(), "error")
+		server.sendServerFailure(queryID, sender)
 		return
 	}
 
@@ -171,6 +175,7 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 
 	if dns_err != nil {
 		server.logger.AddToQueryLog(queryID, "Error while returning query: " + dns_err.Error(), "error")
+		server.sendServerFailure(queryID, sender)
 	} else {
 		server.logger.AddToQueryLog(queryID, "Returned query to " + sender.String(), "info")
 	}
@@ -272,6 +277,31 @@ func (server *DNSFilterServer) refuseRequest(msg []byte, senderAddr net.Addr) *d
 	}
 
 	return nil
+}
+
+func (server *DNSFilterServer) sendServerFailure(queryID uint16, senderAddr net.Addr) {
+	header := dnsmessage.Header{
+		ID: queryID,
+		RCode: dnsmessage.RCodeServerFailure,
+		Response: true,
+	}
+
+	builder := dnsmessage.NewBuilder(nil, header)
+
+	msg, err := builder.Finish()
+
+	if err != nil {
+		server.logger.AddToQueryLog(queryID, "Failed to create Server Failure message", "error")
+		return
+	}
+
+	_, err = server.socket.WriteTo(msg, senderAddr)
+
+	if err != nil {
+		server.logger.AddToQueryLog(queryID, "Failed to send Server Failure message", "error")
+	} else {
+		server.logger.AddToQueryLog(queryID, "Sent back Server Failure message", "info")
+	}
 }
 
 func (server *DNSFilterServer) getQueryID(msg []byte) (uint16, error) {
