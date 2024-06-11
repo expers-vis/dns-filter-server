@@ -8,17 +8,15 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-
 type queryLog struct {
-	msg string
+	msg   string
 	level string
 }
 
 type Logger struct {
 	buffer map[uint16][]queryLog
-	log *zap.SugaredLogger
+	log    *zap.SugaredLogger
 }
-
 
 func NewLogger() (*Logger, error) {
 	logger := &Logger{}
@@ -51,10 +49,9 @@ func createZapLogger() (*zap.SugaredLogger, error) {
 	return zap.New(core).Sugar(), nil
 }
 
-
 func (log *Logger) StartQueryLog(id uint16) {
 	msg := "Starting to process query " + fmt.Sprint(id)
-	
+
 	log.buffer[id] = append(log.buffer[id], queryLog{msg, "info"})
 }
 
@@ -64,7 +61,7 @@ func (log *Logger) AddToQueryLog(id uint16, msg string, level string) {
 
 func (log *Logger) FinishQueryLog(id uint16) {
 	msg := "Finished processing query " + fmt.Sprint(id)
-	
+
 	log.buffer[id] = append(log.buffer[id], queryLog{msg, "info"})
 
 	for _, qlog := range log.buffer[id] {

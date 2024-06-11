@@ -8,15 +8,13 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-
 const BUFFER_SIZE uint16 = 1024
 
-
 type DNSFilterServer struct {
-	IP                 string
-	Port               uint16
-	IpVersion          uint8
-	
+	IP        string
+	Port      uint16
+	IpVersion uint8
+
 	externalServer     string
 	externalServerAddr *net.UDPAddr
 	socket             net.PacketConn
@@ -25,8 +23,8 @@ type DNSFilterServer struct {
 
 func NewDNSServer(ip string, port uint16, ipVersion uint8) (*DNSFilterServer, error) {
 	server := DNSFilterServer{
-		IP: ip,
-		Port: port,
+		IP:        ip,
+		Port:      port,
 		IpVersion: ipVersion,
 	}
 
@@ -58,7 +56,7 @@ func (server *DNSFilterServer) Start() error {
 	if err != nil {
 		return err
 	}
-	
+
 	server.socket = socket
 	defer server.socket.Close()
 
@@ -137,7 +135,7 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 	defer server.logger.FinishQueryLog(queryID)
 
 	if err != nil {
-		server.logger.AddToQueryLog(queryID, "Error on initial packet parsing: " + err.Error(), "error")
+		server.logger.AddToQueryLog(queryID, "Error on initial packet parsing: "+err.Error(), "error")
 		server.sendServerFailure(queryID, sender)
 		return
 	}
@@ -146,17 +144,17 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 
 	if dns_err != nil {
 		if dns_err.Filtered() {
-			server.logger.AddToQueryLog(queryID, "Refusing query for: " + dns_err.Error(), "info")
+			server.logger.AddToQueryLog(queryID, "Refusing query for: "+dns_err.Error(), "info")
 			refuseErr := server.refuseRequest(packet, sender)
 
 			if refuseErr == nil {
 				server.logger.AddToQueryLog(queryID, "Refused and sent back.", "info")
 				return
 			} else {
-				server.logger.AddToQueryLog(queryID, "Unable to refuse: " + refuseErr.Error(), "error")
+				server.logger.AddToQueryLog(queryID, "Unable to refuse: "+refuseErr.Error(), "error")
 			}
 		} else {
-			server.logger.AddToQueryLog(queryID, "Error during handling the request message: " + dns_err.Error(), "error")
+			server.logger.AddToQueryLog(queryID, "Error during handling the request message: "+dns_err.Error(), "error")
 		}
 
 		server.sendServerFailure(queryID, sender)
@@ -166,7 +164,7 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 	return_msg, dns_err := server.getExternalResolution(queryID, msg)
 
 	if dns_err != nil {
-		server.logger.AddToQueryLog(queryID, "Error while getting external resolution: " + dns_err.Error(), "error")
+		server.logger.AddToQueryLog(queryID, "Error while getting external resolution: "+dns_err.Error(), "error")
 		server.sendServerFailure(queryID, sender)
 		return
 	}
@@ -174,10 +172,10 @@ func (server *DNSFilterServer) handle(packet []byte, sender net.Addr) {
 	dns_err = server.handleResponse(return_msg, sender)
 
 	if dns_err != nil {
-		server.logger.AddToQueryLog(queryID, "Error while returning query: " + dns_err.Error(), "error")
+		server.logger.AddToQueryLog(queryID, "Error while returning query: "+dns_err.Error(), "error")
 		server.sendServerFailure(queryID, sender)
 	} else {
-		server.logger.AddToQueryLog(queryID, "Returned query to " + sender.String(), "info")
+		server.logger.AddToQueryLog(queryID, "Returned query to "+sender.String(), "info")
 	}
 }
 
@@ -185,7 +183,7 @@ func (server *DNSFilterServer) handleRequest(msg []byte) ([]byte, *dns_error) {
 	header, questions, err := server.parseQuery(msg)
 
 	if err != nil {
-		return nil, NewDNSError("error parsing query: " + err.Error(), false)
+		return nil, NewDNSError("error parsing query: "+err.Error(), false)
 	}
 
 	// only single questions are supported
@@ -193,13 +191,13 @@ func (server *DNSFilterServer) handleRequest(msg []byte) ([]byte, *dns_error) {
 		// will be refused and sent back
 		return nil, NewDNSError("too many questions", true)
 	}
-	
+
 	// TODO: filter here
 
 	new_msg, err := server.rebuildQuery(header, questions)
 
 	if err != nil {
-		return nil, NewDNSError("error rebuilding query: " + err.Error(), false)
+		return nil, NewDNSError("error rebuilding query: "+err.Error(), false)
 	}
 
 	return new_msg, nil
@@ -209,35 +207,35 @@ func (server *DNSFilterServer) handleResponse(msg []byte, senderAddr net.Addr) *
 	_, _, err := server.parseResponse(msg)
 
 	if err != nil {
-		return NewDNSError("error parsing DNS response: " + err.Error(), false)
-		
+		return NewDNSError("error parsing DNS response: "+err.Error(), false)
+
 	}
 
 	_, err = server.socket.WriteTo(msg, senderAddr)
 
 	if err != nil {
-		return NewDNSError("error sending DNS response message: " + err.Error(), false)
+		return NewDNSError("error sending DNS response message: "+err.Error(), false)
 	}
 
 	return nil
 }
 
-func (server *DNSFilterServer) getExternalResolution(queryID uint16, msg []byte) ([]byte, *dns_error){
-	extConn, err := net.Dial("udp4", server.externalServer + ":53")
+func (server *DNSFilterServer) getExternalResolution(queryID uint16, msg []byte) ([]byte, *dns_error) {
+	extConn, err := net.Dial("udp4", server.externalServer+":53")
 
 	if err != nil {
-		return nil, NewDNSError("error establishing UDP dial: " + err.Error(), false)
+		return nil, NewDNSError("error establishing UDP dial: "+err.Error(), false)
 	}
-	server.logger.AddToQueryLog(queryID, "Established UDP dial: " + extConn.LocalAddr().String(), "info")
+	server.logger.AddToQueryLog(queryID, "Established UDP dial: "+extConn.LocalAddr().String(), "info")
 
 	defer extConn.Close()
 
 	_, err = extConn.Write(msg)
 
 	if err != nil {
-		return nil, NewDNSError("error sending DNS query message: " + err.Error(), false)
+		return nil, NewDNSError("error sending DNS query message: "+err.Error(), false)
 	}
-	server.logger.AddToQueryLog(queryID, "Sent DNS query message to public server " + server.externalServer, "info")
+	server.logger.AddToQueryLog(queryID, "Sent DNS query message to public server "+server.externalServer, "info")
 
 	extConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
@@ -246,7 +244,7 @@ func (server *DNSFilterServer) getExternalResolution(queryID uint16, msg []byte)
 	n, err := extConn.Read(buffer)
 
 	if err != nil {
-		return nil, NewDNSError("error receiving DNS response: " + err.Error(), false)
+		return nil, NewDNSError("error receiving DNS response: "+err.Error(), false)
 	}
 	server.logger.AddToQueryLog(queryID, "Received a DNS response from public server", "info")
 
@@ -257,7 +255,7 @@ func (server *DNSFilterServer) refuseRequest(msg []byte, senderAddr net.Addr) *d
 	header, questions, err := server.parseQuery(msg)
 
 	if err != nil {
-		return NewDNSError("error parsing query: " + err.Error(), false)
+		return NewDNSError("error parsing query: "+err.Error(), false)
 	}
 
 	// mark as refused and as a response
@@ -267,13 +265,13 @@ func (server *DNSFilterServer) refuseRequest(msg []byte, senderAddr net.Addr) *d
 	new_msg, err := server.rebuildQuery(header, questions)
 
 	if err != nil {
-		return NewDNSError("error rebuilding query: " + err.Error(), false)
+		return NewDNSError("error rebuilding query: "+err.Error(), false)
 	}
 
 	_, err = server.socket.WriteTo(new_msg, senderAddr)
 
 	if err != nil {
-		return NewDNSError("error sending DNS message: " + err.Error(), false)
+		return NewDNSError("error sending DNS message: "+err.Error(), false)
 	}
 
 	return nil
@@ -281,8 +279,8 @@ func (server *DNSFilterServer) refuseRequest(msg []byte, senderAddr net.Addr) *d
 
 func (server *DNSFilterServer) sendServerFailure(queryID uint16, senderAddr net.Addr) {
 	header := dnsmessage.Header{
-		ID: queryID,
-		RCode: dnsmessage.RCodeServerFailure,
+		ID:       queryID,
+		RCode:    dnsmessage.RCodeServerFailure,
 		Response: true,
 	}
 
